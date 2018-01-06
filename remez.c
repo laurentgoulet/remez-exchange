@@ -78,47 +78,59 @@
  *******************/
 
 void CreateDenseGrid(int r, int numtaps, int numband, const double bands[],
-                     const double des[], const double weight[], int gridsize,
+                     const double des[], const double weight[], int* gridsize,
                      double Grid[], double D[], double W[],
                      int symmetry, int griddensity)
 {
    int i, j, k, band;
-   double delf, lowf, highf, grid0;
+   double delf, lowf, highf, grid0, df, interp;
 
+   /* nominal frequency step */
    delf = 0.5/(griddensity*r);
 
 /*
  * For differentiator, hilbert,
- *   symmetry is odd and Grid[0] = max(delf, bands[0])
+ *   symmetry is odd and Grid[0] = max(0.5*delf, bands[0])
  */
-   grid0 = (symmetry == NEGATIVE) && (delf > bands[0]) ? delf : bands[0];
+   grid0 = (symmetry == NEGATIVE) && (0.5*delf > bands[0]) ? 0.5*delf : bands[0];
 
    j=0;
    for (band=0; band < numband; band++)
    {
       lowf = (band==0 ? grid0 : bands[2*band]);
       highf = bands[2*band + 1];
-      k = (int)((highf - lowf)/delf + 0.5);   /* .5 for rounding */
+      k = (int)(2*r*griddensity*(bands[2*band+1] - bands[2*band]) + 0.5); /* use same formula as for allocation */
+      if (band == 0 && symmetry == NEGATIVE)
+        k--;
+      /* actual frequency step */
+      df = (highf-lowf)/(k-1);
+      interp = (des[2*band+1]-des[2*band])/(highf-bands[2*band]);
       for (i=0; i<k; i++)
       {
-         D[j] = des[2*band] + i*(des[2*band+1]-des[2*band])/(k-1);
+         D[j] = des[2*band] + (lowf-bands[2*band])*interp;
          W[j] = weight[band];
          Grid[j] = lowf;
-         lowf += delf;
-         j++;
+         lowf += df;
+	 /* Don't exceed allocated gridsize */
+         if (j < *gridsize)
+         {
+           j++;
+         }
       }
       Grid[j-1] = highf;
    }
 
+   /* In case of mismatch, propagate initialized gridsize */
+   *gridsize = j;
 /*
  * Similar to above, if odd symmetry, last grid point can't be .5
  *  - but, if there are even taps, leave the last grid point at .5
  */
    if ((symmetry == NEGATIVE) &&
-       (Grid[gridsize-1] > (0.5 - delf)) &&
+       (Grid[*gridsize-1] > (0.5 - delf)) &&
        (numtaps % 2))
    {
-      Grid[gridsize-1] = 0.5-delf;
+      Grid[*gridsize-1] = 0.5-delf;
    }
 }
 
@@ -194,8 +206,8 @@ void CalcParms(int r, int Ext[], double Grid[], double D[], double W[],
              if (k != i)
                 denom *= 2.0*(xi - x[k]);
        }
-       if (fabs(denom)<0.00001)
-          denom = 0.00001;
+       if (fabs(denom)<1e-10)
+          denom = 1e-10 * (denom < 0 ? -1 : 1);
        ad[i] = 1.0/denom;
    }
 
@@ -508,7 +520,7 @@ void FreqSample(int N, double A[], double h[], int symm)
             x = Pi2 * (n - M)/N;
             for (k=1; k<=M; k++)
                val += 2.0 * A[k] * sin(x*k);
-            h[n] = val/N;
+            h[n] = -val/N;
          }
       }
       else
@@ -519,7 +531,7 @@ void FreqSample(int N, double A[], double h[], int symm)
              x = Pi2 * (n - M)/N;
              for (k=1; k<=(N/2-1); k++)
                 val += 2.0 * A[k] * sin(x*k);
-             h[n] = val/N;
+             h[n] = -val/N;
           }
       }
    }
@@ -634,7 +646,7 @@ void remez(double h[], int *numtaps,
  * Create dense frequency grid
  */
    CreateDenseGrid(r, *numtaps, *numband, bands, des, weight,
-                   gridsize, Grid, D, W, symmetry, *griddensity);
+                   &gridsize, Grid, D, W, symmetry, *griddensity);
    InitialGuess(r, Ext, gridsize);
 
 /*
@@ -888,23 +900,313 @@ Frequency is in the range (0, 1), with 1 being the nyquist frequency")
 /*
 %!test
 %! b = [
-%!    0.0415131831103279
-%!    0.0581639884202646
-%!   -0.0281579212691008
-%!   -0.0535575358002337
-%!   -0.0617245915143180
-%!    0.0507753178978075
-%!    0.2079018331396460
-%!    0.3327160895375440
-%!    0.3327160895375440
-%!    0.2079018331396460
-%!    0.0507753178978075
-%!   -0.0617245915143180
-%!   -0.0535575358002337
-%!   -0.0281579212691008
-%!    0.0581639884202646
-%!    0.0415131831103279];
-%! assert(remez(15,[0,0.3,0.4,1],[1,1,0,0]),b,1e-14);
+%!    0.0416104133896269
+%!    0.0581257393237330
+%!   -0.0281289583629051
+%!   -0.0535690839042500
+%!   -0.0617659121718172
+%!    0.0507522359162575
+%!    0.2078720591778160
+%!    0.3326716366583849
+%!    0.3326716366583849
+%!    0.2078720591778160
+%!    0.0507522359162575
+%!   -0.0617659121718172
+%!   -0.0535690839042500
+%!   -0.0281289583629051
+%!    0.0581257393237330
+%!    0.0416104133896269];
+%! assert(remez(15, [0,0.3,0.4,1], [1,1,0,0]), b, 1e-14);
 
+%!test
+%! % This test is based on
+%! %   "Digital Signal Processing - Principles, Algorithms, and Applications",
+%! %   by John G. Proakis and Dimitri G. Manolakis, Third Edition.
+%! %   Example 8.2.3 (pp 648-649):
+%! %    "Design a lowpass filter of length M = 61 with a passband edge frequency
+%! %    f_p = 0.1 and a stopband edge frequency f_s = 0.15."
+%! % Note however that this implementation comes within ~1e-5 of the expected
+%! % values provided in the reference, but here we match a sample execution
+%! % of the implementation to catch subtle variations of the output of
+%! % more than 1e-14 precision.
+%! b = [
+%!   -0.0012125398190740
+%!   -0.0006741952600982
+%!    0.0000970651050650
+%!    0.0013531775338392
+%!    0.0022977033858626
+%!    0.0019988980782303
+%!    0.0001001314465370
+%!   -0.0026450655232223
+%!   -0.0045143625006237
+%!   -0.0037734736912287
+%!    0.0000090484550353
+%!    0.0051767880724393
+%!    0.0084897796253818
+%!    0.0069575168320132
+%!    0.0000755501040643
+%!   -0.0090367960665303
+%!   -0.0147234691921247
+%!   -0.0119644057670757
+%!   -0.0000361740508339
+%!    0.0157089621934589
+%!    0.0256579017640421
+%!    0.0210635925949618
+%!    0.0000762130350280
+%!   -0.0288966964064803
+%!   -0.0491186067913813
+%!   -0.0427197958722350
+%!   -0.0000578335706833
+%!    0.0735682089586026
+%!    0.1578205244268486
+%!    0.2246608424873270
+%!    0.2500781371537121
+%!    0.2246608424873270
+%!    0.1578205244268486
+%!    0.0735682089586026
+%!   -0.0000578335706833
+%!   -0.0427197958722350
+%!   -0.0491186067913813
+%!   -0.0288966964064803
+%!    0.0000762130350280
+%!    0.0210635925949618
+%!    0.0256579017640421
+%!    0.0157089621934589
+%!   -0.0000361740508339
+%!   -0.0119644057670757
+%!   -0.0147234691921247
+%!   -0.0090367960665303
+%!    0.0000755501040643
+%!    0.0069575168320132
+%!    0.0084897796253818
+%!    0.0051767880724393
+%!    0.0000090484550353
+%!   -0.0037734736912287
+%!   -0.0045143625006237
+%!   -0.0026450655232223
+%!    0.0001001314465370
+%!    0.0019988980782303
+%!    0.0022977033858626
+%!    0.0013531775338392
+%!    0.0000970651050650
+%!   -0.0006741952600982
+%!   -0.0012125398190740];
+%! assert(remez(60, [0,0.2,0.3,1], [1,1,0,0]), b, 1e-14);
+
+%!test
+%! % This test is based on
+%! %   "Digital Signal Processing - Principles, Algorithms, and Applications", 
+%! %   by John G. Proakis and Dimitri G. Manolakis, Third Edition.
+%! %   Example 8.2.4 (pp 650-651)
+%! %     "Design a bandpass filter of length M = 32 with a passband edge
+%! %      frequencies f_{p1} = 0.2 and a f_{p2} = 0.35 and stopband edge
+%! %      frequencies f_{s1} = 0.1 and f_{s2} = 0.425."
+%! %   The given solution then also mention the use of a [10,1,10] weights
+%! %   on the bands.
+%! % Note however that this implementation comes within ~2e-5 of the expected
+%! % values provided in the reference, but here we match a sample execution
+%! % of the implementation to catch subtle variations of the output of
+%! % more than 1e-14 precision.
+%! b = [
+%!   -0.0057449593160819
+%!    0.0009886964787895
+%!    0.0075675123109956
+%!   -0.0065107266931741
+%!    0.0139589163577450
+%!    0.0022986511991473
+%!   -0.0200018667208152
+%!    0.0071313101796869
+%!   -0.0396505837710808
+%!    0.0112654327508972
+%!    0.0662458749269309
+%!   -0.0105061313665467
+%!    0.0851251628680909
+%!   -0.1202492905983940
+%!   -0.2968008471295933
+%!    0.3041282776771977
+%!    0.3041282776771977
+%!   -0.2968008471295933
+%!   -0.1202492905983940
+%!    0.0851251628680909
+%!   -0.0105061313665467
+%!    0.0662458749269309
+%!    0.0112654327508972
+%!   -0.0396505837710808
+%!    0.0071313101796869
+%!   -0.0200018667208152
+%!    0.0022986511991473
+%!    0.0139589163577450
+%!   -0.0065107266931741
+%!    0.0075675123109956
+%!    0.0009886964787895
+%!   -0.0057449593160819];
+%! assert(remez(31, [0,0.2,0.4,0.7,0.85,1], [0,0,1,1,0,0], [10,1,10]), b, 1e-14);
+
+%!test
+%! % This test is based on
+%! %   "Digital Signal Processing - Principles, Algorithms, and Applications", 
+%! %   by John G. Proakis and Dimitri G. Manolakis, Third Edition.
+%! %   Example 8.2.5 (pp 653-654)
+%! %     "Use the Remez algorithm to design a linear-phase FIR differentiator
+%! %     of length M = 60. The Passband edge frequency is 0.1 and the
+%! %     stopband edge frequency is 0.15."
+%! % Note however that this implementation comes within ~5e-6 of the expected
+%! % values provided in the reference, but here we match a sample execution
+%! % of the implementation to catch subtle variations of the output of more
+%! % than 1e-14 precision.
+%! b = [
+%!   -0.0012472648414296
+%!   -0.0015719461409651
+%!    0.0036842028016721
+%!    0.0019299333612279
+%!    0.0014276887563474
+%!   -0.0017621204681462
+%!   -0.0043098863358648
+%!   -0.0046957468293414
+%!   -0.0014116599771143
+%!    0.0041683503807290
+%!    0.0085738512750088
+%!    0.0079829000431730
+%!    0.0011829082196982
+%!   -0.0087370737841627
+%!   -0.0154019205012872
+%!   -0.0128826131274226
+%!   -0.0001870852213829
+%!    0.0166197066586607
+%!    0.0267395223235475
+%!    0.0208938142163349
+%!   -0.0018549506376756
+%!   -0.0311063074842088
+%!   -0.0488259163700931
+%!   -0.0386756813189078
+%!    0.0036749605876484
+%!    0.0654615861680145
+%!    0.1206640310148217
+%!    0.1418226280689449
+%!    0.1140399346967509
+%!    0.0436203905283076
+%!   -0.0436203905283076
+%!   -0.1140399346967509
+%!   -0.1418226280689449
+%!   -0.1206640310148217
+%!   -0.0654615861680145
+%!   -0.0036749605876484
+%!    0.0386756813189078
+%!    0.0488259163700931
+%!    0.0311063074842088
+%!    0.0018549506376756
+%!   -0.0208938142163349
+%!   -0.0267395223235475
+%!   -0.0166197066586607
+%!    0.0001870852213829
+%!    0.0128826131274226
+%!    0.0154019205012872
+%!    0.0087370737841627
+%!   -0.0011829082196982
+%!   -0.0079829000431730
+%!   -0.0085738512750088
+%!   -0.0041683503807290
+%!    0.0014116599771143
+%!    0.0046957468293414
+%!    0.0043098863358648
+%!    0.0017621204681462
+%!   -0.0014276887563474
+%!   -0.0019299333612279
+%!   -0.0036842028016721
+%!    0.0015719461409651
+%!    0.0012472648414296];
+%! assert(remez(59, [0,0.2,0.3,1], [0,1,0,0], 'differentiator'), b, 1e-14);
+
+%!test
+%! % This test is based on
+%! %   "Digital Signal Processing - Principles, Algorithms, and Applications", 
+%! %   by John G. Proakis and Dimitri G. Manolakis, Third Edition.
+%! %   Example 8.2.6 (pp 660-661)
+%! %     "Design a Hilbert transformer with parameters M = 31, f_l = 0.05 and
+%! %     f_u = 0.45."
+%! % Note however that this implementation comes within ~4e-6 of the expected
+%! % values provided in the reference, but here we match a sample execution
+%! % of the implementation to catch subtle variations of the output of more
+%! % than 1e-14 precision.
+%! b = [
+%!    0.0041996640945240
+%!    0.0000000000000010
+%!    0.0092829039647483
+%!    0.0000000000000012
+%!    0.0188353295177154
+%!    0.0000000000000016
+%!    0.0344008575273274
+%!    0.0000000000000015
+%!    0.0595539454724730
+%!    0.0000000000000013
+%!    0.1030380333867637
+%!    0.0000000000000010
+%!    0.1968306093300132
+%!    0.0000000000000006
+%!    0.6313549925597921
+%!   -0.0000000000000000
+%!   -0.6313549925597921
+%!   -0.0000000000000006
+%!   -0.1968306093300132
+%!   -0.0000000000000010
+%!   -0.1030380333867637
+%!   -0.0000000000000013
+%!   -0.0595539454724730
+%!   -0.0000000000000015
+%!   -0.0344008575273274
+%!   -0.0000000000000016
+%!   -0.0188353295177154
+%!   -0.0000000000000012
+%!   -0.0092829039647483
+%!   -0.0000000000000010
+%!   -0.0041996640945240];
+%! assert(remez(30, [0.1,0.9], [1,1], 'hilbert'), b, 1e-14);
+
+%!test
+%! % This test is based on
+%! %   http://octave.1599824.n4.nabble.com/digital-differentiator-using-remez-td1607186.html
+%! % Note however that this implementation comes within ~7e-4 of the expected
+%! % values provided from Matlab, but here we match a sample execution of the
+%! % implementation to catch subtle variations of the output of more than
+%! % 1e-14 precision.
+%! b = [
+%!   -0.2724192551394910
+%!    0.9429429929421833
+%!   -0.0000000000000000
+%!   -0.9429429929421833
+%!    0.2724192551394910];
+%! assert(remez(4, [0,0.75], [0,0.75*pi], 'differentiator'), b, 1e-14);
+
+%!test
+%! % This test is based on
+%! %   http://savannah.gnu.org/bugs/?38134
+%! % With some fixes to remez, we now get a descent (frequency response shows
+%! % an equiripple relative error of ~27%) differentiator output for an 
+%! % order 4 design. Here we match a sample execution of the implementation
+%! % to catch subtle variations of the output of more than 1e-14 precision.
+%! b = [
+%!   -0.3248287372748795
+%!    1.0075846739944025
+%!   -0.0000000000000000
+%!   -1.0075846739944025
+%!    0.3248287372748795];
+%! assert(remez(4, [0,0.8], [0,0.8*pi], 'differentiator'), b, 1e-14);
+%!
+%! % To obtain a result similar to quoted result from MATLAB's firpm,
+%! % we need to specify an order 6 design (relative error of ~13%), which is
+%! % presumably what was used given the number of coefficients.
+%! % Note however that this implementation comes within ~3e-4 of the quoted
+%! % results from MATLAB (unless we assume that the quoted 0.1519 coefficient
+%! % is a typo and should really be 0.1516, in which case the result is really
+%! % within ~8e-5).
+%! b = [
+%!    0.1516425674336023
+%!   -0.4161751757098517
+%!    0.9424454379608089
+%!   -0.0000000000000000
+%!   -0.9424454379608089
+%!    0.4161751757098517
+%!   -0.1516425674336023];
+%! assert(remez(6, [0,0.8], [0,0.8*pi], 'differentiator'), b, 1e-14);
  */
 
